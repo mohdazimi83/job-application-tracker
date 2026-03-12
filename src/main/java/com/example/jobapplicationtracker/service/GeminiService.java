@@ -1,5 +1,7 @@
 package com.example.jobapplicationtracker.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -10,8 +12,6 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @Service
 public class GeminiService {
@@ -19,23 +19,26 @@ public class GeminiService {
     @Value("${gemini.api.key}")
     private String geminiApiKey;
 
-    private static final String GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+    private static final String GEMINI_API_URL ="https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent";
 
     private final HttpClient httpClient;
+    private final ObjectMapper objectMapper;
 
     public GeminiService() {
         this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
+                .connectTimeout(Duration.ofSeconds(15))
                 .build();
+        this.objectMapper = new ObjectMapper();
     }
 
     public List<String> generateInterviewQuestions(String companyName, String jobRole) {
-        String prompt = String.format("Give me 3 likely interview questions for a %s position at %s. Return as a plain numbered list, nothing else.", jobRole, companyName);
-        
-        // Escape quotes to prevent JSON syntax errors
-        prompt = prompt.replace("\"", "\\\"");
+        String prompt = String.format(
+            "Give me exactly 3 interview questions for a %s position at %s. " +
+            "Return ONLY a numbered list like this format:\n1. question\n2. question\n3. question",
+            jobRole, companyName
+        );
 
-        String requestBody = String.format("{\"contents\": [{\"parts\": [{\"text\": \"%s\"}]}]}", prompt);
+        String requestBody = buildRequestBody(prompt);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(GEMINI_API_URL + "?key=" + geminiApiKey))
@@ -44,47 +47,78 @@ public class GeminiService {
                 .build();
 
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            
+            HttpResponse<String> response = httpClient.send(request,
+                HttpResponse.BodyHandlers.ofString());
+
             if (response.statusCode() == 200) {
-                return parseQuestionsFromResponse(response.body());
+                return parseQuestions(response.body());
             } else {
-                throw new RuntimeException("Failed to call Gemini API: " + response.body());
+                System.err.println("Gemini API error: " + response.body());
+                throw new RuntimeException("Gemini API returned status: " + response.statusCode());
             }
         } catch (Exception e) {
-            throw new RuntimeException("Error during Gemini API call", e);
+            System.err.println("Gemini call failed: " + e.getMessage());
+            throw new RuntimeException("Error calling Gemini API", e);
         }
     }
 
-    private List<String> parseQuestionsFromResponse(String responseBody) {
-        // very basic JSON parsing without adding Jackson/Gson tree dependency manually since we just want the text
-        // Looks for "text": "actual answer" inside the JSON response
-        
+    private String buildRequestBody(String prompt) {
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            // Build JSON safely using Jackson — no manual string escaping
+            com.fasterxml.jackson.databind.node.ObjectNode root = mapper.createObjectNode();
+            com.fasterxml.jackson.databind.node.ArrayNode contents = mapper.createArrayNode();
+            com.fasterxml.jackson.databind.node.ObjectNode content = mapper.createObjectNode();
+            com.fasterxml.jackson.databind.node.ArrayNode parts = mapper.createArrayNode();
+            com.fasterxml.jackson.databind.node.ObjectNode part = mapper.createObjectNode();
+            part.put("text", prompt);
+            parts.add(part);
+            content.set("parts", parts);
+            contents.add(content);
+            root.set("contents", contents);
+            return mapper.writeValueAsString(root);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to build request body", e);
+        }
+    }
+
+    private List<String> parseQuestions(String responseBody) {
         List<String> questions = new ArrayList<>();
-        
-        Matcher matcher = Pattern.compile("\"text\":\\s*\"([^\"]+)\"").matcher(responseBody);
-        
-        if (matcher.find()) {
-            String textContent = matcher.group(1);
-            // Handle escaped newlines from the JSON string response
-            textContent = textContent.replace("\\n", "\n");
-            
-            // Split by lines and clean up the numbers
-            String[] lines = textContent.split("\n");
+        try {
+            JsonNode root = objectMapper.readTree(responseBody);
+            // Navigate: candidates[0].content.parts[0].text
+            String text = root
+                .path("candidates").get(0)
+                .path("content")
+                .path("parts").get(0)
+                .path("text")
+                .asText("");
+
+            System.out.println("Gemini raw text: " + text);
+
+            // Split by lines and extract numbered items
+            String[] lines = text.split("\n");
             for (String line : lines) {
-                line = line.trim();
-                // Match lines starting with "1. ", "2. ", etc
-                if (line.matches("^\\d+\\.\\s*.*")) {
-                    questions.add(line.replaceFirst("^\\d+\\.\\s*", "").trim());
+                line = line.trim()
+                           .replaceAll("\\*+", "") // remove bold asterisks
+                           .trim();
+                if (line.matches("^\\d+[.)\\s].*")) {
+                    String question = line.replaceFirst("^\\d+[.)\\s]+", "").trim();
+                    if (!question.isEmpty()) {
+                        questions.add(question);
+                    }
                 }
             }
+        } catch (Exception e) {
+            System.err.println("Failed to parse Gemini response: " + e.getMessage());
         }
-        
-        // Fallback in case the numbered list parsing fails or empty
+
         if (questions.isEmpty()) {
-            questions.add("Could not generate specific questions at this time.");
+            questions.add("What experience do you have relevant to this role?");
+            questions.add("How do you approach problem-solving in a team environment?");
+            questions.add("Where do you see yourself growing in this position?");
         }
-        
+
         return questions;
     }
 }
