@@ -67,18 +67,18 @@ public class GeminiService {
 
             if (response.statusCode() == 200) {
                 List<String> parsed = parseQuestions(response.body());
-                return parsed.isEmpty() ? List.of("Error: Gemini returned empty response.") : parsed;
+                return parsed.isEmpty() ? FALLBACK_QUESTIONS : parsed;
             } else if (response.statusCode() == 429) {
                 System.err.println("Gemini API quota exceeded (429). Returning fallback questions.");
-                return List.of("Error 429: Gemini API quota exceeded. Please check your token usage on Google AI Studio.");
+                return FALLBACK_QUESTIONS;
             } else {
                 String apiError = extractApiError(response.body());
                 System.err.println("Gemini API returned status " + response.statusCode() + ": " + apiError);
-                return List.of("Error " + response.statusCode() + ": " + apiError);
+                return FALLBACK_QUESTIONS;
             }
         } catch (Exception e) {
             System.err.println("Gemini call failed: " + e.getMessage());
-            return List.of("Connection Error: " + e.getMessage());
+            return FALLBACK_QUESTIONS;
         }
     }
 
