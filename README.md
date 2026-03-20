@@ -1,4 +1,4 @@
-# 💼 Job Application Tracker with AI Interview Coach
+# 💼 TrackIQ — Job Application Tracker with AI Interview Coach
 
 A full-stack Java web application built with **Spring Boot** to track job applications and generate AI-powered interview preparation questions using the **Google Gemini API**.
 
