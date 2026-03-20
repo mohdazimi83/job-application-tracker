@@ -142,20 +142,34 @@ async function prepareInterview(id, company, role) {
     const res  = await fetch(`${BASE_URL}/api/applications/${id}/prepare`, {
       method: 'POST'
     });
-    const data = await res.json();
+    let data = null;
 
+    try {
+      data = await res.json();
+    } catch (parseError) {
+      data = null;
+    }
+
+    if (!res.ok) {
+      const message = data && (data.error || data.message)
+        ? (data.error || data.message)
+        : 'Failed to generate questions.';
+      throw new Error(message);
+    }
+
+    // data is a list of InterviewQuestion objects — each has a "questionText" field
     if (data && data.length > 0) {
       modalContent.innerHTML = data.map((q, i) => `
         <div class="question-item">
-        <strong>Q${i + 1}.</strong> ${escapeHtml(typeof q === 'string' ? q : q.questionText)}
+        <strong>Q${i + 1}.</strong> ${escapeHtml(q.questionText || '')}
         </div>
 `).join('');
     } else {
-      modalContent.innerHTML = '<p style="color:var(--text-secondary);text-align:center;">No questions returned. Try again.</p>';
+      modalContent.innerHTML = '<p style="color:var(--text-secondary);text-align:center;">Could not generate questions right now. Please try again later.</p>';
     }
   } catch (err) {
     console.error('Failed to get questions:', err);
-    modalContent.innerHTML = '<p style="color:#ef4444;text-align:center;">Failed to generate questions. Check your Gemini API key.</p>';
+    modalContent.innerHTML = '<p style="color:var(--text-secondary);text-align:center;">Could not generate questions right now. Please try again later.</p>';
   }
 }
 

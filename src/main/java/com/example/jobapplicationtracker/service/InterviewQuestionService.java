@@ -14,12 +14,18 @@ import java.util.List;
 @Service
 public class InterviewQuestionService {
 
+    private static final List<String> FALLBACK_QUESTION_TEXTS = List.of(
+        "Tell me about yourself and your background in this field.",
+        "How do you approach problem-solving when you face a technical challenge?",
+        "Where do you see yourself growing in this role over the next year?"
+    );
+
     private final InterviewQuestionRepository questionRepository;
     private final JobApplicationRepository applicationRepository;
     private final GeminiService geminiService;
 
     @Autowired
-    public InterviewQuestionService(InterviewQuestionRepository questionRepository, 
+    public InterviewQuestionService(InterviewQuestionRepository questionRepository,
                                     JobApplicationRepository applicationRepository,
                                     GeminiService geminiService) {
         this.questionRepository = questionRepository;
@@ -38,21 +44,46 @@ public class InterviewQuestionService {
         JobApplication application = applicationRepository.findById(applicationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Job Application not found with id: " + applicationId));
 
-        List<String> generatedTextQuestions = geminiService.generateInterviewQuestions(
-                application.getCompanyName(), 
-                application.getJobRole()
-        );
+        List<String> generatedTextQuestions;
+        String generatedBy;
+
+        try {
+            generatedTextQuestions = geminiService.generateInterviewQuestions(
+                    application.getCompanyName(),
+                    application.getJobRole()
+            );
+            generatedBy = "Gemini AI";
+        } catch (Exception e) {
+            System.err.println("GeminiService threw an exception, using fallback questions: " + e.getMessage());
+            generatedTextQuestions = FALLBACK_QUESTION_TEXTS;
+            generatedBy = "Fallback";
+        }
 
         List<InterviewQuestion> savedQuestions = new ArrayList<>();
 
-        for (String text : generatedTextQuestions) {
-            InterviewQuestion question = new InterviewQuestion();
-            question.setApplicationId(applicationId);
-            question.setQuestionText(text);
-            question.setGeneratedBy("Gemini AI");
-            // createdAt is handled by @PrePersist in the Entity
+        if (generatedTextQuestions != null) {
+            for (String text : generatedTextQuestions) {
+                if (text != null && !text.isBlank()) {
+                    InterviewQuestion question = new InterviewQuestion();
+                    question.setApplicationId(applicationId);
+                    question.setQuestionText(text);
+                    question.setGeneratedBy(generatedBy);
+                    // createdAt is handled by @PrePersist in the Entity
 
-            savedQuestions.add(questionRepository.save(question));
+                    savedQuestions.add(questionRepository.save(question));
+                }
+            }
+        }
+
+        // Safety net: if nothing was saved at all, save fallback questions
+        if (savedQuestions.isEmpty()) {
+            for (String text : FALLBACK_QUESTION_TEXTS) {
+                InterviewQuestion question = new InterviewQuestion();
+                question.setApplicationId(applicationId);
+                question.setQuestionText(text);
+                question.setGeneratedBy("Fallback");
+                savedQuestions.add(questionRepository.save(question));
+            }
         }
 
         return savedQuestions;

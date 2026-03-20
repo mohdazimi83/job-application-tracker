@@ -19,7 +19,17 @@ public class GeminiService {
     @Value("${gemini.api.key}")
     private String geminiApiKey;
 
-    private static final String GEMINI_API_URL ="https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent";
+    @Value("${gemini.api.model:gemini-2.5-flash}")
+    private String geminiModel;
+
+    private static final String GEMINI_API_URL =
+            "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent";
+
+    private static final List<String> FALLBACK_QUESTIONS = List.of(
+        "Tell me about yourself and your background in this field.",
+        "How do you approach problem-solving when you face a technical challenge?",
+        "Where do you see yourself growing in this role over the next year?"
+    );
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -32,33 +42,43 @@ public class GeminiService {
     }
 
     public List<String> generateInterviewQuestions(String companyName, String jobRole) {
+        if (geminiApiKey == null || geminiApiKey.isBlank()) {
+            System.err.println("Gemini API key is missing. Returning fallback questions.");
+            return FALLBACK_QUESTIONS;
+        }
+
         String prompt = String.format(
             "Give me exactly 3 interview questions for a %s position at %s. " +
             "Return ONLY a numbered list like this format:\n1. question\n2. question\n3. question",
             jobRole, companyName
         );
 
-        String requestBody = buildRequestBody(prompt);
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(GEMINI_API_URL + "?key=" + geminiApiKey))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-                .build();
-
         try {
+            String requestBody = buildRequestBody(prompt);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(String.format(GEMINI_API_URL, geminiModel) + "?key=" + geminiApiKey))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                    .build();
+
             HttpResponse<String> response = httpClient.send(request,
                 HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                return parseQuestions(response.body());
+                List<String> parsed = parseQuestions(response.body());
+                return parsed.isEmpty() ? FALLBACK_QUESTIONS : parsed;
+            } else if (response.statusCode() == 429) {
+                System.err.println("Gemini API quota exceeded (429). Returning fallback questions.");
+                return FALLBACK_QUESTIONS;
             } else {
-                System.err.println("Gemini API error: " + response.body());
-                throw new RuntimeException("Gemini API returned status: " + response.statusCode());
+                String apiError = extractApiError(response.body());
+                System.err.println("Gemini API returned status " + response.statusCode() + ": " + apiError);
+                return FALLBACK_QUESTIONS;
             }
         } catch (Exception e) {
             System.err.println("Gemini call failed: " + e.getMessage());
-            throw new RuntimeException("Error calling Gemini API", e);
+            return FALLBACK_QUESTIONS;
         }
     }
 
@@ -86,15 +106,23 @@ public class GeminiService {
         List<String> questions = new ArrayList<>();
         try {
             JsonNode root = objectMapper.readTree(responseBody);
-            // Navigate: candidates[0].content.parts[0].text
-            String text = root
-                .path("candidates").get(0)
-                .path("content")
-                .path("parts").get(0)
-                .path("text")
-                .asText("");
+
+            // Navigate: candidates[0] → content → parts[0] → text
+            JsonNode firstCandidate = root.path("candidates").path(0);
+            JsonNode firstPart = firstCandidate.path("content").path("parts").path(0);
+
+            if (firstCandidate.isMissingNode() || firstPart.isMissingNode()) {
+                System.err.println("Gemini response missing candidates/parts. Returning fallback.");
+                return FALLBACK_QUESTIONS;
+            }
+
+            String text = firstPart.path("text").asText("");
 
             System.out.println("Gemini raw text: " + text);
+
+            if (text.isBlank()) {
+                return FALLBACK_QUESTIONS;
+            }
 
             // Split by lines and extract numbered items
             String[] lines = text.split("\n");
@@ -111,14 +139,22 @@ public class GeminiService {
             }
         } catch (Exception e) {
             System.err.println("Failed to parse Gemini response: " + e.getMessage());
+            return FALLBACK_QUESTIONS;
         }
 
-        if (questions.isEmpty()) {
-            questions.add("What experience do you have relevant to this role?");
-            questions.add("How do you approach problem-solving in a team environment?");
-            questions.add("Where do you see yourself growing in this position?");
-        }
+        return questions.isEmpty() ? FALLBACK_QUESTIONS : questions;
+    }
 
-        return questions;
+    private String extractApiError(String responseBody) {
+        try {
+            JsonNode root = objectMapper.readTree(responseBody);
+            String message = root.path("error").path("message").asText("");
+            if (!message.isBlank()) {
+                return message;
+            }
+        } catch (Exception ignored) {
+            // Fall through to the generic message below if the body is not valid JSON.
+        }
+        return "Unknown Gemini API error";
     }
 }
