@@ -3,7 +3,7 @@
 // All API calls via fetch() — no frameworks
 // ============================================================
 
-const BASE_URL = 'http://localhost:8080';
+const BASE_URL = '';
 
 // ── DOM Elements ─────────────────────────────────────────────
 const form          = document.getElementById('applicationForm');
